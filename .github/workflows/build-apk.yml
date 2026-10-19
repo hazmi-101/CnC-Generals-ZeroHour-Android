@@ -45,7 +45,7 @@ jobs:
           key: vcpkg-${{ hashFiles('engine/vcpkg.json') }}
 
       # ---- WAJIB BERHASIL: engine (libmain.so) + SDL3/OpenAL/GameSpy via FetchContent ----
-      - name: Build engine
+      - name: Configure engine
         run: |
           cmake -S engine -B engine/build/android-arm64 -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -54,6 +54,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=arm64-android \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
+            -DFETCHCONTENT_UPDATES_DISCONNECTED=ON \
             -DSAGE_USE_DX8=OFF \
             -DSAGE_USE_SDL3=ON \
             -DSAGE_USE_OPENAL=ON \
@@ -66,7 +67,59 @@ jobs:
             -DRTS_BUILD_GENERALS=OFF \
             -DRTS_BUILD_CORE_TOOLS=OFF \
             -DRTS_BUILD_ZEROHOUR_TOOLS=OFF
-          cmake --build engine/build/android-arm64 --target z_generals -j4
+
+      - name: Patch GameSpy untuk Android (bionic tanpa pthread_cancel)
+        run: |
+          cat > /tmp/gs_android_compat.h <<'EOF'
+          #ifndef GS_ANDROID_COMPAT_H
+          #define GS_ANDROID_COMPAT_H
+          #ifdef __ANDROID__
+          #include <pthread.h>
+          #include <signal.h>
+          #include <string.h>
+          #ifndef PTHREAD_CANCEL_ENABLE
+          #define PTHREAD_CANCEL_ENABLE 0
+          #define PTHREAD_CANCEL_DISABLE 1
+          #define PTHREAD_CANCEL_DEFERRED 0
+          #define PTHREAD_CANCEL_ASYNCHRONOUS 1
+          #endif
+          static inline void gs_cancel_handler(int sig) { (void)sig; pthread_exit(NULL); }
+          static inline int gs_pthread_cancel(pthread_t t)
+          {
+              struct sigaction sa;
+              memset(&sa, 0, sizeof(sa));
+              sa.sa_handler = gs_cancel_handler;
+              sigemptyset(&sa.sa_mask);
+              sigaction(SIGUSR2, &sa, NULL);
+              return pthread_kill(t, SIGUSR2);
+          }
+          #define pthread_cancel gs_pthread_cancel
+          #define pthread_setcancelstate(a, b) ((void)(a), (void)(b), 0)
+          #define pthread_setcanceltype(a, b) ((void)(a), (void)(b), 0)
+          #define pthread_testcancel() ((void)0)
+          #endif
+          #endif
+          EOF
+          f=$(find engine/build/android-arm64 -iname gsplatformthread.c -print -quit)
+          test -n "$f" || { echo "gsplatformthread.c tidak ditemukan"; exit 1; }
+          echo "Patch: $f"
+          cat /tmp/gs_android_compat.h "$f" > "$f.new"
+          mv "$f.new" "$f"
+
+      - name: Build engine
+        run: |
+          set -o pipefail
+          cmake --build engine/build/android-arm64 --target z_generals -j4 -- -k 0 2>&1 | tee build.log
+
+      - name: Ringkasan error (kalau build gagal)
+        if: failure()
+        run: |
+          {
+            echo "### Error build (maks 40 baris)"
+            echo '```'
+            grep -E "error:|FAILED:|CMake Error" build.log | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---- BEST EFFORT: boleh gagal, build lanjut ----
       - name: Build DXVK (best effort)
