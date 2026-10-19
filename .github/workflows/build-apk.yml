@@ -1,0 +1,62 @@
+name: build-apk
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # kalau engine/ memakai submodule
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake python3-pip
+          pip install meson
+
+      # TODO: bangun DXVK (libdxvk_d3d8.so, libdxvk_d3d9.so) sesuai
+      #       docs/BUILDING-DXVK-ANDROID.md (meson + cross file NDK)
+      # TODO: SDL3, SDL3_image, OpenAL Soft, gamespy -> libSDL3.so, dst.
+      #       (vcpkg: $VCPKG_INSTALLATION_ROOT sudah ada di runner)
+
+      - name: Build engine (libmain.so)
+        env:
+          ANDROID_NDK: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cmake -S engine -B engine/build/android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28
+          cmake --build engine/build/android-arm64 --target z_generals -j4
+
+      - name: Stage native libs
+        run: |
+          mkdir -p android/app/libs/arm64-v8a
+          cp engine/build/android-arm64/GeneralsMD/Code/Main/libmain.so android/app/libs/arm64-v8a/
+          # TODO: salin juga libSDL3.so libSDL3_image.so libdxvk_d3d8.so
+          #       libdxvk_d3d9.so libopenal.so libgamespy.so ke folder yang sama
+
+      - name: Assemble APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generals-engine-only-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
