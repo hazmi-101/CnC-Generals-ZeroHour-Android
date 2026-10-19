@@ -2,41 +2,26 @@ name: build-apk
 
 on:
   push:
-    branches: [ main ]              # sesuaikan: main / master
+    branches: [ main ]
     paths:
-      - 'engine/**'
-      - 'android/**'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
-
-# Cancel build lama kalau ada push baru — hemat menit Actions
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-# Principle of least privilege
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 330
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install SDK platform + NDK 27
         run: |
+          yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
@@ -52,13 +37,10 @@ jobs:
           "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
 
-      - name: Cache vcpkg downloads
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/vcpkg
           key: vcpkg-${{ hashFiles('engine/vcpkg.json') }}
-          restore-keys: |
-            vcpkg-
 
       # ---- WAJIB BERHASIL: engine (libmain.so) + SDL3/OpenAL/GameSpy via FetchContent ----
       - name: Build engine
@@ -104,13 +86,9 @@ jobs:
           : > missing-libs.txt
           for n in libmain libSDL3 libSDL3_image libopenal libgamespy libdxvk_d3d8 libdxvk_d3d9; do
             f=$(find engine/build dxvk-src/build -name "$n.so" 2>/dev/null | head -n1 || true)
-            if [ -n "$f" ]; then
-              cp -L "$f" android/app/libs/arm64-v8a/ && echo "OK      $n"
-            else
-              echo "MISSING $n" | tee -a missing-libs.txt
-            fi
+            if [ -n "$f" ]; then cp -L "$f" android/app/libs/arm64-v8a/ && echo "OK      $n"
+            else echo "MISSING $n" | tee -a missing-libs.txt; fi
           done
-          # Hard fail kalau libmain.so gak ada — ini wajib buat APK
           test -f android/app/libs/arm64-v8a/libmain.so
 
       - name: Assemble APK (tanpa data game)
@@ -119,18 +97,14 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: apk-tanpa-data
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error     # gagalkan step kalau APK gak ke-build
 
-      - name: Upload native libs + report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: native-libs
           path: |
             android/app/libs/arm64-v8a/*.so
             missing-libs.txt
-          if-no-files-found: warn
